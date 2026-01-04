@@ -1,13 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+// Vercel Edge Runtimeを使用 (Node.jsより高速・軽量)
 export const runtime = 'edge';
 
 export async function GET(req: NextRequest) {
   const url = req.nextUrl.searchParams.get('url');
-  if (!url) return new NextResponse('Missing URL', { status: 400 });
+  
+  if (!url) {
+    return new NextResponse('URL Parameter is missing', { status: 400 });
+  }
 
   try {
-    // ターゲットサイトへアクセス
+    // ターゲットのHTMLを取得
     const targetRes = await fetch(url, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -15,88 +19,48 @@ export async function GET(req: NextRequest) {
     });
 
     const contentType = targetRes.headers.get('content-type') || '';
-
-    // HTML以外（画像、CSS、JSなど）はそのまま流す
+    
+    // HTML以外のリソース（画像など）はそのまま流す
     if (!contentType.includes('text/html')) {
       const blob = await targetRes.blob();
       return new NextResponse(blob, {
         status: targetRes.status,
         headers: {
-          'Content-Type': contentType,
-          'Access-Control-Allow-Origin': '*',
+            'Content-Type': contentType,
+            'Access-Control-Allow-Origin': '*'
         }
       });
     }
 
-    // HTMLテキストを取得
+    // HTMLの場合は中身を書き換える
     let html = await targetRes.text();
+
+    // 簡易的な書き換えロジック (注意: 完璧ではありません)
+    // 相対パス (例: src="/img.png") を 絶対パスに変換しないとリンク切れする
+    // 本来はもっと複雑なパーサーが必要ですが、MVPとして簡易実装します
     const origin = new URL(url).origin;
+    
+    // href="/..." -> href="origin/..." のように単純置換 (不完全ですが動きます)
+    // プロキシ経由で読み込ませるためのPrefix
+    const proxyBase = `/api/proxy?url=`;
 
-    // --- ここからが魔法（Magic）です ---
-
-    // 1. <base>タグを注入
-    // これにより、画像やCSSの相対パス（例: src="/logo.png"）が
-    // 自動的にターゲットサイト（例: google.com/logo.png）を参照するようになります。
+    // <head>にbaseタグを埋め込むのが一番手っ取り早いハックです
+    // これにより相対パスの画像などが正しく読み込まれる確率が上がります
     html = html.replace('<head>', `<head><base href="${origin}/">`);
 
-    // 2. リンクとフォームを乗っ取るスクリプトを注入
-    // ユーザーがクリックした瞬間、プロキシURLに変換します。
-    const interceptorScript = `
-      <script>
-        (function() {
-          console.log('👻 GhostFrame Interceptor Active');
-          
-          // リンククリックを乗っ取る
-          document.addEventListener('click', function(e) {
-            const link = e.target.closest('a');
-            if (link && link.href) {
-              e.preventDefault(); // 本来の移動をキャンセル
-              
-              // リンク先がhttpで始まっていればプロキシ経由にする
-              const targetUrl = link.href;
-              const proxyUrl = '/api/proxy?url=' + encodeURIComponent(targetUrl);
-              
-              // iframe内のページ移動を実行
-              window.location.href = proxyUrl;
-            }
-          });
-
-          // 検索フォームなどの送信を乗っ取る
-          document.addEventListener('submit', function(e) {
-            e.preventDefault();
-            const form = e.target;
-            
-            // フォームの送信先URLを構築
-            const url = new URL(form.action);
-            const params = new URLSearchParams(new FormData(form));
-            const fullTargetUrl = url.toString() + '?' + params.toString();
-            
-            // プロキシ経由で移動
-            window.location.href = '/api/proxy?url=' + encodeURIComponent(fullTargetUrl);
-          });
-        })();
-      </script>
-    `;
-
-    // </body>の直前にスクリプトを挿入（なければ末尾に追加）
-    if (html.includes('</body>')) {
-      html = html.replace('</body>', interceptorScript + '</body>');
-    } else {
-      html += interceptorScript;
-    }
-
-    // レスポンスヘッダーの調整
+    // レスポンスヘッダーの調整 (iframe拒否を無効化)
     const newHeaders = new Headers();
     newHeaders.set('Content-Type', 'text/html');
     newHeaders.set('Access-Control-Allow-Origin', '*');
+    // X-Frame-Optionsなどはセットしないことで無効化される
 
     return new NextResponse(html, {
       status: 200,
       headers: newHeaders,
     });
 
-  } catch (e) {
-    console.error(e);
-    return new NextResponse('Proxy Error', { status: 500 });
+  } catch (error) {
+    console.error(error);
+    return new NextResponse('Proxy Error: Failed to fetch target.', { status: 500 });
   }
 }
