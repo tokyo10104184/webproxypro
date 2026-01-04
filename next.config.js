@@ -1,8 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-    // 開発中の型チェックなどを無視してデプロイを成功させる設定
-    typescript: { ignoreBuildErrors: true },
-    eslint: { ignoreDuringBuilds: true },
+    typescript: {
+        // 型エラーがあっても無理やりビルドを成功させる
+        ignoreBuildErrors: true,
+    },
 }
 
 module.exports = nextConfig
